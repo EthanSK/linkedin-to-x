@@ -1,12 +1,6 @@
 import * as crypto from "crypto";
 import * as https from "https";
-
-interface XCredentials {
-  apiKey: string;
-  apiSecret: string;
-  accessToken: string;
-  accessTokenSecret: string;
-}
+import { XCredentials } from "./config.js";
 
 interface TweetResponse {
   data?: { id: string; text: string };
@@ -18,7 +12,7 @@ interface TweetResponse {
 const X_CHAR_LIMIT = 280;
 const URL_CHAR_LENGTH = 23; // X counts all URLs as 23 chars
 
-export function formatForX(text: string, linkedinUrl?: string): string {
+export function formatForX(text: string, linkedinUrl?: string | null): string {
   const suffix = linkedinUrl ? `\n\n${linkedinUrl}` : "";
   const suffixLength = linkedinUrl ? 2 + URL_CHAR_LENGTH : 0;
   const availableChars = X_CHAR_LIMIT - suffixLength;

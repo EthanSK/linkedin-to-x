@@ -5,19 +5,22 @@ import * as os from "os";
 
 dotenv.config();
 
+export interface XCredentials {
+  apiKey: string;
+  apiSecret: string;
+  accessToken: string;
+  accessTokenSecret: string;
+}
+
 export interface Config {
-  x: {
-    apiKey: string;
-    apiSecret: string;
-    accessToken: string;
-    accessTokenSecret: string;
-  };
+  x: XCredentials;
   linkedin: {
-    rssUrl: string | null;
+    profileUrl: string;
   };
-  pollIntervalMinutes: number;
+  playwrightProfileDir: string;
+  maxPostAgeDays: number;
   dataDir: string;
-  postedFilePath: string;
+  trackerFilePath: string;
 }
 
 function requireEnv(name: string): string {
@@ -36,6 +39,8 @@ export function loadConfig(): Config {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
+  const defaultPlaywrightDir = path.join(os.homedir(), ".claude", "playwright-profile");
+
   return {
     x: {
       apiKey: requireEnv("X_API_KEY"),
@@ -44,26 +49,11 @@ export function loadConfig(): Config {
       accessTokenSecret: requireEnv("X_ACCESS_TOKEN_SECRET"),
     },
     linkedin: {
-      rssUrl: process.env.LINKEDIN_RSS_URL || null,
+      profileUrl: requireEnv("LINKEDIN_PROFILE_URL"),
     },
-    pollIntervalMinutes: parseInt(process.env.POLL_INTERVAL_MINUTES || "15", 10),
+    playwrightProfileDir: process.env.PLAYWRIGHT_PROFILE_DIR || defaultPlaywrightDir,
+    maxPostAgeDays: parseInt(process.env.MAX_POST_AGE_DAYS || "2", 10),
     dataDir,
-    postedFilePath: path.join(dataDir, "posted.json"),
+    trackerFilePath: path.join(dataDir, "posted.md"),
   };
-}
-
-export function loadPostedIds(filePath: string): Set<string> {
-  if (!fs.existsSync(filePath)) {
-    return new Set();
-  }
-  try {
-    const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    return new Set(data);
-  } catch {
-    return new Set();
-  }
-}
-
-export function savePostedIds(filePath: string, ids: Set<string>): void {
-  fs.writeFileSync(filePath, JSON.stringify([...ids], null, 2));
 }
