@@ -69,7 +69,7 @@ program
 
     for (let i = 0; i < postsToSend.length; i++) {
       const post = postsToSend[i];
-      const tweetText = formatForX(post.text, post.url);
+      const tweetText = formatForX(post.text);
       const preview = tweetText.slice(0, 100).replace(/\n/g, " ");
 
       if (opts.dryRun) {
