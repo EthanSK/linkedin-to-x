@@ -68,6 +68,31 @@ async function extractPosts(page: Page): Promise<LinkedInPost[]> {
     for (const container of postContainers) {
       if (results.length >= maxPosts) break;
 
+      // Skip reposts/shares — look for "reposted this" indicator
+      const headerText = container.querySelector(".update-components-header")?.textContent || "";
+      const socialActionText = container.querySelector(".feed-shared-header")?.textContent || "";
+      const fullHeaderArea = container.querySelector(".update-components-actor")?.textContent || "";
+      const containerText = container.textContent || "";
+
+      // Check for repost indicators
+      const isRepost =
+        headerText.toLowerCase().includes("reposted") ||
+        socialActionText.toLowerCase().includes("reposted") ||
+        // Check for "reposted this" anywhere near the top of the post
+        containerText.slice(0, 300).toLowerCase().includes("reposted this") ||
+        containerText.slice(0, 300).toLowerCase().includes("reposted");
+
+      // Also check if the author is not Ethan (the profile owner)
+      const actorName = container.querySelector(".update-components-actor__name")?.textContent?.trim() || "";
+      const isNotOwner = actorName &&
+        !actorName.toLowerCase().includes("ethan") &&
+        !actorName.toLowerCase().includes("sarif-kattan") &&
+        !actorName.toLowerCase().includes("ethansk");
+
+      if (isRepost || isNotOwner) {
+        continue;
+      }
+
       // Extract text content — try multiple selectors, filter for spans with real content
       let text = "";
 

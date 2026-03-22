@@ -15,6 +15,8 @@ const X_CHAR_LIMIT = 280;
 const URL_CHAR_LENGTH = 23; // X counts all URLs as 23 chars
 
 export function formatForX(text: string, linkedinUrl?: string | null): string {
+  // Return full text — if it exceeds 280 chars, postTweet will split into a thread.
+  // Only append the LinkedIn URL suffix for short posts (single tweet).
   const suffix = linkedinUrl ? `\n\n${linkedinUrl}` : "";
   const suffixLength = linkedinUrl ? 2 + URL_CHAR_LENGTH : 0;
   const availableChars = X_CHAR_LIMIT - suffixLength;
@@ -23,9 +25,8 @@ export function formatForX(text: string, linkedinUrl?: string | null): string {
     return text + suffix;
   }
 
-  // Truncate with ellipsis
-  const truncated = text.slice(0, availableChars - 1) + "\u2026";
-  return truncated + suffix;
+  // For long posts, return full text (thread mode will handle it)
+  return text;
 }
 
 function percentEncode(str: string): string {
@@ -104,26 +105,124 @@ function httpsRequest(
   });
 }
 
+/**
+ * Split text into thread parts at sentence boundaries, each <= 280 chars.
+ */
+export function splitIntoThread(text: string): string[] {
+  if (text.length <= X_CHAR_LIMIT) {
+    return [text];
+  }
+
+  const parts: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= X_CHAR_LIMIT) {
+      parts.push(remaining.trim());
+      break;
+    }
+
+    // Try to split at a sentence boundary (period followed by space, or newline)
+    let splitIndex = -1;
+
+    // Search backwards from the char limit for a good split point
+    for (let i = X_CHAR_LIMIT - 1; i >= X_CHAR_LIMIT / 2; i--) {
+      const ch = remaining[i];
+      // Split after a period followed by space/newline, or at a newline
+      if (ch === "\n") {
+        splitIndex = i + 1;
+        break;
+      }
+      if (ch === "." && (i + 1 >= remaining.length || remaining[i + 1] === " " || remaining[i + 1] === "\n")) {
+        splitIndex = i + 1;
+        break;
+      }
+    }
+
+    // If no good sentence boundary found, split at last space
+    if (splitIndex === -1) {
+      for (let i = X_CHAR_LIMIT - 1; i >= X_CHAR_LIMIT / 2; i--) {
+        if (remaining[i] === " ") {
+          splitIndex = i;
+          break;
+        }
+      }
+    }
+
+    // Last resort: hard split at limit
+    if (splitIndex === -1) {
+      splitIndex = X_CHAR_LIMIT;
+    }
+
+    parts.push(remaining.slice(0, splitIndex).trim());
+    remaining = remaining.slice(splitIndex).trim();
+  }
+
+  return parts.filter((p) => p.length > 0);
+}
+
 export async function postTweet(
   creds: XCredentials,
   text: string
 ): Promise<{ success: boolean; tweetId?: string; error?: string }> {
+  const parts = splitIntoThread(text);
+
+  if (parts.length === 1) {
+    // Single tweet — use existing flow
+    return postSingleTweet(creds, parts[0]);
+  }
+
+  // Thread mode: post first tweet, then reply chain
+  console.log(`Post exceeds ${X_CHAR_LIMIT} chars, posting as ${parts.length}-part thread.`);
+
+  const firstResult = await postSingleTweet(creds, parts[0]);
+  if (!firstResult.success || !firstResult.tweetId) {
+    return firstResult;
+  }
+
+  let lastTweetId = firstResult.tweetId;
+
+  for (let i = 1; i < parts.length; i++) {
+    const replyResult = await postSingleTweet(creds, parts[i], lastTweetId);
+    if (!replyResult.success || !replyResult.tweetId) {
+      return {
+        success: false,
+        tweetId: firstResult.tweetId,
+        error: `Thread failed at part ${i + 1}/${parts.length}: ${replyResult.error}`,
+      };
+    }
+    lastTweetId = replyResult.tweetId;
+  }
+
+  return { success: true, tweetId: firstResult.tweetId };
+}
+
+async function postSingleTweet(
+  creds: XCredentials,
+  text: string,
+  replyToTweetId?: string
+): Promise<{ success: boolean; tweetId?: string; error?: string }> {
   // Check for OAuth 2.0 tokens first (user-authorized flow)
   const oauth2Tokens = loadOAuth2Tokens();
   if (oauth2Tokens) {
-    return postTweetOAuth2(oauth2Tokens, text);
+    return postTweetOAuth2(oauth2Tokens, text, replyToTweetId);
   }
 
   // Fall back to OAuth 1.0a
-  return postTweetOAuth1(creds, text);
+  return postTweetOAuth1(creds, text, replyToTweetId);
 }
 
 async function postTweetOAuth1(
   creds: XCredentials,
-  text: string
+  text: string,
+  replyToTweetId?: string
 ): Promise<{ success: boolean; tweetId?: string; error?: string }> {
   const url = "https://api.x.com/2/tweets";
-  const jsonBody = JSON.stringify({ text });
+  const payload: Record<string, unknown> = { text };
+  if (replyToTweetId) {
+    payload.reply = { in_reply_to_tweet_id: replyToTweetId };
+  }
+  const jsonBody = JSON.stringify(payload);
 
   const authHeader = buildOAuthHeader("POST", url, creds);
 
@@ -158,10 +257,15 @@ async function postTweetOAuth1(
 
 async function postTweetOAuth2(
   tokens: XOAuth2Tokens,
-  text: string
+  text: string,
+  replyToTweetId?: string
 ): Promise<{ success: boolean; tweetId?: string; error?: string }> {
   const url = "https://api.x.com/2/tweets";
-  const jsonBody = JSON.stringify({ text });
+  const payload: Record<string, unknown> = { text };
+  if (replyToTweetId) {
+    payload.reply = { in_reply_to_tweet_id: replyToTweetId };
+  }
+  const jsonBody = JSON.stringify(payload);
 
   const parsed = new URL(url);
   const response = await httpsRequest(
