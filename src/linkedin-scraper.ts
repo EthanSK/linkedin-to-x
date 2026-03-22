@@ -1,4 +1,6 @@
 import { chromium, type BrowserContext, type Page } from "playwright";
+import * as https from "https";
+import * as http from "http";
 import { Config } from "./config.js";
 
 export interface LinkedInPost {
@@ -7,6 +9,23 @@ export interface LinkedInPost {
 }
 
 const MAX_POSTS = 10;
+
+/** Follow redirects to resolve shortened URLs (lnkd.in, bit.ly, etc.) */
+async function resolveRedirect(url: string): Promise<string> {
+  return new Promise((resolve) => {
+    const client = url.startsWith("https") ? https : http;
+    const req = client.request(url, { method: "HEAD", timeout: 5000 }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        resolve(res.headers.location);
+      } else {
+        resolve(url);
+      }
+    });
+    req.on("error", () => resolve(url));
+    req.on("timeout", () => { req.destroy(); resolve(url); });
+    req.end();
+  });
+}
 
 export async function scrapeLinkedInPosts(config: Config): Promise<LinkedInPost[]> {
   const profileUrl = config.linkedin.profileUrl.replace(/\/$/, "");
@@ -118,19 +137,16 @@ async function extractPosts(page: Page): Promise<LinkedInPost[]> {
         }
       }
 
-      // Extract external links (GitHub, etc.) from the post — keep them in the text
+      // Extract links from the post — collect shortened URLs to resolve later
       const linkElements = container.querySelectorAll(
         ".feed-shared-inline-show-more-text a[href], .feed-shared-update-v2__commentary a[href], .update-components-text a[href]"
       );
+      const linksToResolve: Array<{ linkText: string; href: string }> = [];
       for (const link of linkElements) {
         const href = (link as HTMLAnchorElement).href;
         const linkText = link.textContent?.trim() || "";
-        // If the link text is a shortened URL (like lnkd.in or bit.ly), replace with the actual href
-        if (linkText && href && !href.includes("linkedin.com") && !text.includes(href)) {
-          // Replace shortened link text with the full URL if it looks like a shortened link
-          if (linkText.match(/^https?:\/\//) || linkText.match(/\.\.\./)) {
-            text = text.replace(linkText, href);
-          }
+        if (linkText && href) {
+          linksToResolve.push({ linkText, href });
         }
       }
 
@@ -154,11 +170,44 @@ async function extractPosts(page: Page): Promise<LinkedInPost[]> {
         }
       }
 
-      results.push({ text, url });
+      results.push({ text, url, linksToResolve } as any);
     }
 
     return results;
-  }, MAX_POSTS);
+  }, MAX_POSTS) as Array<{ text: string; url: string | null; linksToResolve: Array<{ linkText: string; href: string }> }>;
 
-  return posts;
+  // Post-process: resolve shortened LinkedIn URLs (lnkd.in) to actual destinations
+  console.log("Resolving shortened URLs...");
+  const resolvedPosts: LinkedInPost[] = [];
+  for (const post of posts) {
+    let text = post.text;
+    if (post.linksToResolve && post.linksToResolve.length > 0) {
+      for (const { linkText, href } of post.linksToResolve) {
+        // Only process links whose href is an actual URL
+        if (!href.startsWith("http://") && !href.startsWith("https://")) continue;
+
+        // Skip any LinkedIn internal links (hashtags, profiles, company pages, etc.)
+        if (href.includes("linkedin.com")) continue;
+
+        // Only resolve known URL shorteners
+        const isShortener = /\b(lnkd\.in|bit\.ly|t\.co|goo\.gl|tinyurl\.com|ow\.ly|buff\.ly)\b/.test(href);
+        let resolvedUrl = href;
+        if (isShortener) {
+          resolvedUrl = await resolveRedirect(href);
+        }
+
+        // Skip if it resolved to a LinkedIn URL
+        if (resolvedUrl.includes("linkedin.com")) continue;
+
+        // Only replace link text that itself looks like a URL (starts with http:// or https://)
+        // This prevents replacing text like "AGENTS.md" which LinkedIn wraps as links
+        if (linkText && text.includes(linkText) && /^https?:\/\//.test(linkText)) {
+          text = text.replace(linkText, resolvedUrl);
+        }
+      }
+    }
+    resolvedPosts.push({ text, url: post.url });
+  }
+
+  return resolvedPosts;
 }
