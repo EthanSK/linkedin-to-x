@@ -170,8 +170,8 @@ program
 
       // 5 second delay between posts
       if (i < postsToSend.length - 1) {
-        console.log("  Waiting 5 seconds...");
-        await new Promise((r) => setTimeout(r, 5000));
+        console.log("  Waiting 60 seconds...");
+        await new Promise((r) => setTimeout(r, 60000));
       }
     }
 
