@@ -12,6 +12,10 @@ const MAX_POSTS = 10;
 
 /** Follow redirects to resolve shortened URLs (lnkd.in, bit.ly, etc.) */
 async function resolveRedirect(url: string): Promise<string> {
+  // For lnkd.in specifically, fetch HTML and parse the interstitial page
+  if (url.includes("lnkd.in")) {
+    return resolveLinkedInShortUrl(url);
+  }
   return new Promise((resolve) => {
     const client = url.startsWith("https") ? https : http;
     const req = client.request(url, { method: "HEAD", timeout: 5000 }, (res) => {
@@ -20,6 +24,41 @@ async function resolveRedirect(url: string): Promise<string> {
       } else {
         resolve(url);
       }
+    });
+    req.on("error", () => resolve(url));
+    req.on("timeout", () => { req.destroy(); resolve(url); });
+    req.end();
+  });
+}
+
+/** LinkedIn's lnkd.in shortener serves an HTML interstitial page instead of an HTTP redirect.
+ *  The real destination URL is in an <a> tag with data-tracking-control-name="external_url_click". */
+async function resolveLinkedInShortUrl(url: string): Promise<string> {
+  return new Promise((resolve) => {
+    const client = url.startsWith("https") ? https : http;
+    const req = client.request(url, { method: "GET", timeout: 8000 }, (res) => {
+      // Handle HTTP redirects first (in case LinkedIn changes behavior)
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        resolve(res.headers.location);
+        return;
+      }
+      let html = "";
+      res.on("data", (chunk: Buffer) => { html += chunk.toString(); });
+      res.on("end", () => {
+        // Look for the external URL in the interstitial page
+        const match = html.match(/data-tracking-control-name="external_url_click"[^>]*href="([^"]+)"/);
+        if (match && match[1]) {
+          resolve(match[1]);
+        } else {
+          // Fallback: try og:url or any redirect meta tag
+          const ogMatch = html.match(/<meta[^>]*property="og:url"[^>]*content="([^"]+)"/);
+          if (ogMatch && ogMatch[1] && !ogMatch[1].includes("linkedin.com")) {
+            resolve(ogMatch[1]);
+          } else {
+            resolve(url);
+          }
+        }
+      });
     });
     req.on("error", () => resolve(url));
     req.on("timeout", () => { req.destroy(); resolve(url); });
@@ -196,8 +235,13 @@ async function extractPosts(page: Page): Promise<LinkedInPost[]> {
           resolvedUrl = await resolveRedirect(href);
         }
 
-        // Skip if it resolved to a LinkedIn URL
-        if (resolvedUrl.includes("linkedin.com")) continue;
+        // If it resolved to a LinkedIn URL, remove the lnkd.in link text from the post
+        if (resolvedUrl.includes("linkedin.com")) {
+          if (linkText && text.includes(linkText) && /^https?:\/\//.test(linkText)) {
+            text = text.replace(linkText, "").replace(/\n{3,}/g, "\n\n").trim();
+          }
+          continue;
+        }
 
         // Only replace link text that itself looks like a URL (starts with http:// or https://)
         // This prevents replacing text like "AGENTS.md" which LinkedIn wraps as links
