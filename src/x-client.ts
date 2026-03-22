@@ -11,12 +11,12 @@ interface TweetResponse {
   title?: string;
 }
 
-const X_CHAR_LIMIT = 280;
+const X_CHAR_LIMIT = parseInt(process.env.X_CHAR_LIMIT || "25000", 10); // X Premium allows up to 25,000 chars
 const URL_CHAR_LENGTH = 23; // X counts all URLs as 23 chars
 
 export function formatForX(text: string, linkedinUrl?: string | null): string {
-  // Return full text — if it exceeds 280 chars, postTweet will split into a thread.
-  // Only append the LinkedIn URL suffix for short posts (single tweet).
+  // With X Premium (25k char limit), most posts fit in a single tweet.
+  // Thread mode is only used if text exceeds X_CHAR_LIMIT.
   const suffix = linkedinUrl ? `\n\n${linkedinUrl}` : "";
   const suffixLength = linkedinUrl ? 2 + URL_CHAR_LENGTH : 0;
   const availableChars = X_CHAR_LIMIT - suffixLength;
@@ -106,7 +106,8 @@ function httpsRequest(
 }
 
 /**
- * Split text into thread parts at sentence boundaries, each <= 280 chars.
+ * Split text into thread parts at sentence boundaries, each <= X_CHAR_LIMIT.
+ * With X Premium (25k limit), this is rarely needed.
  */
 export function splitIntoThread(text: string): string[] {
   if (text.length <= X_CHAR_LIMIT) {
