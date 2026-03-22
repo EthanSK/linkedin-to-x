@@ -107,13 +107,30 @@ async function extractPosts(page: Page): Promise<LinkedInPost[]> {
         const spans = container.querySelectorAll(selector);
         const parts: string[] = [];
         for (const span of spans) {
-          const content = span.textContent?.trim() || "";
+          // Use innerText to preserve line breaks from <br> tags
+          const content = (span as HTMLElement).innerText?.trim() || "";
           if (content.length > 20) {
             parts.push(content);
           }
         }
         if (parts.length > 0) {
           text = parts.join("\n").trim();
+        }
+      }
+
+      // Extract external links (GitHub, etc.) from the post — keep them in the text
+      const linkElements = container.querySelectorAll(
+        ".feed-shared-inline-show-more-text a[href], .feed-shared-update-v2__commentary a[href], .update-components-text a[href]"
+      );
+      for (const link of linkElements) {
+        const href = (link as HTMLAnchorElement).href;
+        const linkText = link.textContent?.trim() || "";
+        // If the link text is a shortened URL (like lnkd.in or bit.ly), replace with the actual href
+        if (linkText && href && !href.includes("linkedin.com") && !text.includes(href)) {
+          // Replace shortened link text with the full URL if it looks like a shortened link
+          if (linkText.match(/^https?:\/\//) || linkText.match(/\.\.\./)) {
+            text = text.replace(linkText, href);
+          }
         }
       }
 
