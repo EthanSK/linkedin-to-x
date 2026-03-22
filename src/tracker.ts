@@ -4,6 +4,10 @@ export interface TrackerEntry {
   linkedinSnippet: string;
   datePostedToX: string;
   xPostId: string;
+  /** Comma-separated list of platforms this post was cross-posted to (e.g. "x", "x,facebook") */
+  platforms?: string;
+  /** Facebook post ID if posted to Facebook */
+  fbPostId?: string;
 }
 
 const HEADER = `# LinkedIn to X - Posted Tracker
@@ -59,6 +63,26 @@ export function addTrackerEntry(
   saveTracker(filePath, entries);
 }
 
+/**
+ * Update an existing tracker entry (matched by linkedinSnippet).
+ * Used to update the entry after posting to additional platforms (e.g. Facebook).
+ */
+export function updateTrackerEntry(
+  filePath: string,
+  linkedinSnippet: string,
+  updates: Partial<TrackerEntry>
+): void {
+  const entries = loadTracker(filePath);
+  const needle = normalizeSnippet(linkedinSnippet);
+  for (const entry of entries) {
+    if (normalizeSnippet(entry.linkedinSnippet) === needle) {
+      Object.assign(entry, updates);
+      break;
+    }
+  }
+  saveTracker(filePath, entries);
+}
+
 export function isAlreadyPosted(
   entries: TrackerEntry[],
   postText: string
@@ -82,4 +106,48 @@ export function snippetForTracker(text: string): string {
     return clean.slice(0, 97) + "...";
   }
   return clean;
+}
+
+/**
+ * Separate tracker for Facebook posts — stored as JSON alongside the markdown tracker.
+ * This avoids breaking the existing markdown table format.
+ */
+export interface FacebookTrackerEntry {
+  linkedinSnippet: string;
+  datePostedToFb: string;
+  fbPostId: string;
+}
+
+export function getFbTrackerPath(trackerFilePath: string): string {
+  return trackerFilePath.replace(/\.md$/, "-facebook.json");
+}
+
+export function loadFbTracker(trackerFilePath: string): FacebookTrackerEntry[] {
+  const fbPath = getFbTrackerPath(trackerFilePath);
+  if (!fs.existsSync(fbPath)) {
+    return [];
+  }
+  try {
+    return JSON.parse(fs.readFileSync(fbPath, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+export function addFbTrackerEntry(
+  trackerFilePath: string,
+  entry: FacebookTrackerEntry
+): void {
+  const entries = loadFbTracker(trackerFilePath);
+  entries.push(entry);
+  const fbPath = getFbTrackerPath(trackerFilePath);
+  fs.writeFileSync(fbPath, JSON.stringify(entries, null, 2), "utf-8");
+}
+
+export function isAlreadyPostedToFb(
+  entries: FacebookTrackerEntry[],
+  postText: string
+): boolean {
+  const needle = normalizeSnippet(postText);
+  return entries.some((e) => normalizeSnippet(e.linkedinSnippet) === needle);
 }

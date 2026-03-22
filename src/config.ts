@@ -18,6 +18,11 @@ export interface XOAuth2Tokens {
   expiresAt?: number;
 }
 
+export interface FacebookCredentials {
+  pageId: string;
+  accessToken: string;
+}
+
 export interface Config {
   x: XCredentials;
   xOAuth2?: XOAuth2Tokens;
@@ -26,6 +31,8 @@ export interface Config {
   linkedin: {
     profileUrl: string;
   };
+  facebook?: FacebookCredentials;
+  facebookEnabled: boolean;
   playwrightProfileDir: string;
   dataDir: string;
   trackerFilePath: string;
@@ -74,6 +81,22 @@ export function loadConfig(): Config {
 
   const oauth2Tokens = loadOAuth2Tokens();
 
+  const facebookEnabled = process.env.FACEBOOK_ENABLED === "true";
+  let facebook: FacebookCredentials | undefined;
+
+  if (facebookEnabled) {
+    const fbPageId = process.env.FB_PAGE_ID;
+    const fbAccessToken = process.env.FB_ACCESS_TOKEN;
+    if (!fbPageId || !fbAccessToken) {
+      console.error(
+        "FACEBOOK_ENABLED is true but FB_PAGE_ID or FB_ACCESS_TOKEN is missing."
+      );
+      console.error("Set these in your .env file or disable Facebook posting.");
+      process.exit(1);
+    }
+    facebook = { pageId: fbPageId, accessToken: fbAccessToken };
+  }
+
   return {
     x: {
       apiKey: requireEnv("X_API_KEY"),
@@ -87,6 +110,8 @@ export function loadConfig(): Config {
     linkedin: {
       profileUrl: requireEnv("LINKEDIN_PROFILE_URL"),
     },
+    facebook,
+    facebookEnabled,
     playwrightProfileDir: process.env.PLAYWRIGHT_PROFILE_DIR || defaultPlaywrightDir,
     dataDir,
     trackerFilePath: path.join(dataDir, "posted.md"),

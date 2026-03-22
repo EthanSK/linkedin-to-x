@@ -1,6 +1,6 @@
 {
   "name": "linkedin-to-x",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Cross-post LinkedIn posts to X/Twitter using Playwright scraping",
   "main": "dist/index.js",
   "bin": {
