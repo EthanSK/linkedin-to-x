@@ -1,6 +1,8 @@
 import * as crypto from "crypto";
 import * as https from "https";
-import { XCredentials } from "./config.js";
+import * as http from "http";
+import { execFile } from "child_process";
+import { XCredentials, XOAuth2Tokens, loadOAuth2Tokens } from "./config.js";
 
 interface TweetResponse {
   data?: { id: string; text: string };
@@ -106,6 +108,20 @@ export async function postTweet(
   creds: XCredentials,
   text: string
 ): Promise<{ success: boolean; tweetId?: string; error?: string }> {
+  // Check for OAuth 2.0 tokens first (user-authorized flow)
+  const oauth2Tokens = loadOAuth2Tokens();
+  if (oauth2Tokens) {
+    return postTweetOAuth2(oauth2Tokens, text);
+  }
+
+  // Fall back to OAuth 1.0a
+  return postTweetOAuth1(creds, text);
+}
+
+async function postTweetOAuth1(
+  creds: XCredentials,
+  text: string
+): Promise<{ success: boolean; tweetId?: string; error?: string }> {
   const url = "https://api.x.com/2/tweets";
   const jsonBody = JSON.stringify({ text });
 
@@ -138,4 +154,201 @@ export async function postTweet(
     result.errors?.map((e) => e.message).join("; ") ||
     `HTTP ${response.statusCode}: ${response.body}`;
   return { success: false, error: errorMsg };
+}
+
+async function postTweetOAuth2(
+  tokens: XOAuth2Tokens,
+  text: string
+): Promise<{ success: boolean; tweetId?: string; error?: string }> {
+  const url = "https://api.x.com/2/tweets";
+  const jsonBody = JSON.stringify({ text });
+
+  const parsed = new URL(url);
+  const response = await httpsRequest(
+    url,
+    {
+      method: "POST",
+      hostname: parsed.hostname,
+      path: parsed.pathname,
+      headers: {
+        Authorization: `Bearer ${tokens.accessToken}`,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(jsonBody),
+      },
+    },
+    jsonBody
+  );
+
+  const result: TweetResponse = JSON.parse(response.body);
+
+  if (response.statusCode === 201 && result.data) {
+    return { success: true, tweetId: result.data.id };
+  }
+
+  const errorMsg =
+    result.detail ||
+    result.errors?.map((e) => e.message).join("; ") ||
+    `HTTP ${response.statusCode}: ${response.body}`;
+  return { success: false, error: errorMsg };
+}
+
+// --- OAuth 2.0 PKCE Auth Flow ---
+
+function generateCodeVerifier(): string {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+function generateCodeChallenge(verifier: string): string {
+  return crypto.createHash("sha256").update(verifier).digest("base64url");
+}
+
+export async function startOAuth2Flow(clientId: string, clientSecret: string): Promise<void> {
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = generateCodeChallenge(codeVerifier);
+  const state = crypto.randomBytes(16).toString("hex");
+  const redirectUri = "http://localhost:3333/callback";
+
+  const scopes = ["tweet.read", "tweet.write", "users.read", "offline.access"];
+
+  const authUrl = new URL("https://x.com/i/oauth2/authorize");
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", clientId);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", scopes.join(" "));
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  console.log("\n=== X OAuth 2.0 Authorization ===\n");
+  console.log("Open this URL in your browser to authorize:\n");
+  console.log(authUrl.toString());
+  console.log("\nWaiting for callback on http://localhost:3333/callback ...\n");
+
+  // Try to open the URL automatically
+  try {
+    const platform = process.platform;
+    const cmd = platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
+    execFile(cmd, [authUrl.toString()]);
+  } catch {
+    // Ignore - user can open manually
+  }
+
+  // Start local server to receive the callback
+  const code = await waitForCallback(state);
+
+  console.log("Received authorization code. Exchanging for tokens...\n");
+
+  // Exchange code for tokens
+  const tokens = await exchangeCodeForTokens(clientId, clientSecret, code, codeVerifier, redirectUri);
+
+  // Save tokens
+  const { saveOAuth2Tokens } = await import("./config.js");
+  saveOAuth2Tokens(tokens);
+
+  console.log("Tokens saved to ~/.linkedin-to-x/x-tokens.json");
+  console.log("The x-client will now use OAuth 2.0 Bearer tokens for posting.");
+  console.log("\nDone! You can now run `linkedin-to-x sync` to cross-post.\n");
+}
+
+function waitForCallback(expectedState: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url || "", "http://localhost:3333");
+
+      if (url.pathname === "/callback") {
+        const code = url.searchParams.get("code");
+        const state = url.searchParams.get("state");
+        const error = url.searchParams.get("error");
+
+        if (error) {
+          res.writeHead(400, { "Content-Type": "text/html" });
+          res.end(`<h1>Authorization Failed</h1><p>Error: ${error}</p>`);
+          server.close();
+          reject(new Error(`OAuth error: ${error}`));
+          return;
+        }
+
+        if (state !== expectedState) {
+          res.writeHead(400, { "Content-Type": "text/html" });
+          res.end(`<h1>Authorization Failed</h1><p>State mismatch.</p>`);
+          server.close();
+          reject(new Error("State mismatch in OAuth callback"));
+          return;
+        }
+
+        if (!code) {
+          res.writeHead(400, { "Content-Type": "text/html" });
+          res.end(`<h1>Authorization Failed</h1><p>No code received.</p>`);
+          server.close();
+          reject(new Error("No authorization code received"));
+          return;
+        }
+
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(`<h1>Authorization Successful!</h1><p>You can close this tab and return to the terminal.</p>`);
+        server.close();
+        resolve(code);
+      } else {
+        res.writeHead(404);
+        res.end("Not found");
+      }
+    });
+
+    server.listen(3333, () => {
+      console.log("Local callback server listening on port 3333...");
+    });
+
+    // Timeout after 5 minutes
+    setTimeout(() => {
+      server.close();
+      reject(new Error("Timed out waiting for OAuth callback (5 minutes)"));
+    }, 5 * 60 * 1000);
+  });
+}
+
+async function exchangeCodeForTokens(
+  clientId: string,
+  clientSecret: string,
+  code: string,
+  codeVerifier: string,
+  redirectUri: string
+): Promise<{ accessToken: string; refreshToken: string; expiresAt: number }> {
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+    code_verifier: codeVerifier,
+    client_id: clientId,
+  }).toString();
+
+  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+
+  const response = await httpsRequest(
+    "https://api.x.com/2/oauth2/token",
+    {
+      method: "POST",
+      hostname: "api.x.com",
+      path: "/2/oauth2/token",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Length": Buffer.byteLength(body),
+        Authorization: `Basic ${basicAuth}`,
+      },
+    },
+    body
+  );
+
+  const result = JSON.parse(response.body);
+
+  if (response.statusCode !== 200 || !result.access_token) {
+    throw new Error(
+      `Token exchange failed: ${result.error_description || result.error || response.body}`
+    );
+  }
+
+  return {
+    accessToken: result.access_token,
+    refreshToken: result.refresh_token,
+    expiresAt: Date.now() + (result.expires_in || 7200) * 1000,
+  };
 }

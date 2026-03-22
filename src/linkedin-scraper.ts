@@ -1,11 +1,12 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext, type Page } from "playwright";
 import { Config } from "./config.js";
 
 export interface LinkedInPost {
   text: string;
-  timestamp: Date | null;
   url: string | null;
 }
+
+const MAX_POSTS = 10;
 
 export async function scrapeLinkedInPosts(config: Config): Promise<LinkedInPost[]> {
   const profileUrl = config.linkedin.profileUrl.replace(/\/$/, "");
@@ -43,8 +44,8 @@ export async function scrapeLinkedInPosts(config: Config): Promise<LinkedInPost[
     await page.evaluate(() => window.scrollBy(0, 2000));
     await page.waitForTimeout(2000);
 
-    const posts = await extractPosts(page, config.maxPostAgeDays);
-    console.log(`Extracted ${posts.length} post(s) from the last ${config.maxPostAgeDays} day(s).`);
+    const posts = await extractPosts(page);
+    console.log(`Extracted ${posts.length} post(s) (max ${MAX_POSTS}).`);
 
     return posts;
   } catch (err) {
@@ -57,18 +58,16 @@ export async function scrapeLinkedInPosts(config: Config): Promise<LinkedInPost[
   }
 }
 
-async function extractPosts(page: Page, maxAgeDays: number): Promise<LinkedInPost[]> {
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
-
-  // Try multiple selectors that LinkedIn uses for post containers
-  const posts = await page.evaluate((cutoffMs: number) => {
-    const results: Array<{ text: string; timestamp: string | null; url: string | null }> = [];
+async function extractPosts(page: Page): Promise<LinkedInPost[]> {
+  const posts = await page.evaluate((maxPosts: number) => {
+    const results: Array<{ text: string; url: string | null }> = [];
 
     // LinkedIn post containers
     const postContainers = document.querySelectorAll(".feed-shared-update-v2");
 
     for (const container of postContainers) {
+      if (results.length >= maxPosts) break;
+
       // Extract text content — try multiple selectors, filter for spans with real content
       let text = "";
 
@@ -95,39 +94,6 @@ async function extractPosts(page: Page, maxAgeDays: number): Promise<LinkedInPos
 
       if (!text) continue;
 
-      // Extract timestamp — try aria-hidden span first, then <time> element
-      let timestamp: string | null = null;
-      const timeSpan = container.querySelector(
-        ".feed-shared-actor__sub-description span[aria-hidden='true']"
-      );
-      if (timeSpan) {
-        // Parse relative time strings like "2h", "1d", "3w"
-        const relText = timeSpan.textContent?.trim() || "";
-        const relMatch = relText.match(/(\d+)\s*(m|h|d|w|mo|y)/);
-        if (relMatch) {
-          const num = parseInt(relMatch[1], 10);
-          const unit = relMatch[2];
-          const now = Date.now();
-          const ms: Record<string, number> = {
-            m: 60_000,
-            h: 3_600_000,
-            d: 86_400_000,
-            w: 604_800_000,
-            mo: 2_592_000_000,
-            y: 31_536_000_000,
-          };
-          if (ms[unit]) {
-            timestamp = new Date(now - num * ms[unit]).toISOString();
-          }
-        }
-      }
-      if (!timestamp) {
-        const timeEl = container.querySelector("time");
-        if (timeEl) {
-          timestamp = timeEl.getAttribute("datetime");
-        }
-      }
-
       // Extract post URL from the activity URN or share link
       let url: string | null = null;
       const urnAttr = container.getAttribute("data-urn");
@@ -146,26 +112,11 @@ async function extractPosts(page: Page, maxAgeDays: number): Promise<LinkedInPos
         }
       }
 
-      results.push({ text, timestamp, url });
+      results.push({ text, url });
     }
 
     return results;
-  }, cutoffDate.getTime());
+  }, MAX_POSTS);
 
-  // Filter by date and convert
-  return posts
-    .map((p) => ({
-      text: p.text,
-      timestamp: p.timestamp ? new Date(p.timestamp) : null,
-      url: p.url,
-    }))
-    .filter((p) => {
-      if (!p.timestamp) {
-        // If no timestamp, include it (assume recent)
-        return true;
-      }
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - maxAgeDays);
-      return p.timestamp >= cutoff;
-    });
+  return posts;
 }

@@ -12,13 +12,21 @@ export interface XCredentials {
   accessTokenSecret: string;
 }
 
+export interface XOAuth2Tokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: number;
+}
+
 export interface Config {
   x: XCredentials;
+  xOAuth2?: XOAuth2Tokens;
+  xClientId?: string;
+  xClientSecret?: string;
   linkedin: {
     profileUrl: string;
   };
   playwrightProfileDir: string;
-  maxPostAgeDays: number;
   dataDir: string;
   trackerFilePath: string;
 }
@@ -33,6 +41,29 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function getTokensPath(): string {
+  return path.join(os.homedir(), ".linkedin-to-x", "x-tokens.json");
+}
+
+export function loadOAuth2Tokens(): XOAuth2Tokens | null {
+  const tokensPath = getTokensPath();
+  if (!fs.existsSync(tokensPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(tokensPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+export function saveOAuth2Tokens(tokens: XOAuth2Tokens): void {
+  const tokensPath = getTokensPath();
+  const dir = path.dirname(tokensPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(tokensPath, JSON.stringify(tokens, null, 2), "utf-8");
+}
+
 export function loadConfig(): Config {
   const dataDir = path.join(os.homedir(), ".linkedin-to-x");
   if (!fs.existsSync(dataDir)) {
@@ -41,6 +72,8 @@ export function loadConfig(): Config {
 
   const defaultPlaywrightDir = path.join(os.homedir(), ".claude", "playwright-profile");
 
+  const oauth2Tokens = loadOAuth2Tokens();
+
   return {
     x: {
       apiKey: requireEnv("X_API_KEY"),
@@ -48,11 +81,13 @@ export function loadConfig(): Config {
       accessToken: requireEnv("X_ACCESS_TOKEN"),
       accessTokenSecret: requireEnv("X_ACCESS_TOKEN_SECRET"),
     },
+    xOAuth2: oauth2Tokens ?? undefined,
+    xClientId: process.env.X_CLIENT_ID,
+    xClientSecret: process.env.X_CLIENT_SECRET,
     linkedin: {
       profileUrl: requireEnv("LINKEDIN_PROFILE_URL"),
     },
     playwrightProfileDir: process.env.PLAYWRIGHT_PROFILE_DIR || defaultPlaywrightDir,
-    maxPostAgeDays: parseInt(process.env.MAX_POST_AGE_DAYS || "2", 10),
     dataDir,
     trackerFilePath: path.join(dataDir, "posted.md"),
   };

@@ -9,7 +9,7 @@ export interface TrackerEntry {
 const HEADER = `# LinkedIn to X - Posted Tracker
 
 This file tracks posts that have been cross-posted from LinkedIn to X.
-Do not delete this file — if deleted, only posts from the last 2 days will be considered.
+Do not delete this file — it is used for deduplication.
 
 | LinkedIn Post Snippet | Date Posted to X | X Post ID |
 |---|---|---|`;
@@ -61,10 +61,9 @@ export function addTrackerEntry(
 
 export function isAlreadyPosted(
   entries: TrackerEntry[],
-  postSnippet: string
+  postText: string
 ): boolean {
-  // Compare by normalized snippet (first 80 chars)
-  const needle = normalizeSnippet(postSnippet);
+  const needle = normalizeSnippet(postText);
   return entries.some((e) => normalizeSnippet(e.linkedinSnippet) === needle);
 }
 
@@ -72,15 +71,15 @@ export function normalizeSnippet(text: string): string {
   return text
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 80)
+    .slice(0, 100)
     .toLowerCase();
 }
 
 export function snippetForTracker(text: string): string {
-  // Escape pipes for markdown table, truncate to 80 chars
+  // Escape pipes for markdown table, truncate to 100 chars
   const clean = text.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
-  if (clean.length > 80) {
-    return clean.slice(0, 77) + "...";
+  if (clean.length > 100) {
+    return clean.slice(0, 97) + "...";
   }
   return clean;
 }

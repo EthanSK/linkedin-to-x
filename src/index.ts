@@ -3,22 +3,13 @@
 import { Command } from "commander";
 import { loadConfig } from "./config.js";
 import { scrapeLinkedInPosts, LinkedInPost } from "./linkedin-scraper.js";
-import { formatForX, postTweet } from "./x-client.js";
+import { formatForX, postTweet, startOAuth2Flow } from "./x-client.js";
 import {
   loadTracker,
   addTrackerEntry,
   isAlreadyPosted,
   snippetForTracker,
-  normalizeSnippet,
 } from "./tracker.js";
-import {
-  buildSchedule,
-  loadSchedule,
-  saveSchedule,
-  getDuePosts,
-  markPosted,
-  ScheduleFile,
-} from "./scheduler.js";
 
 const program = new Command();
 
@@ -28,14 +19,30 @@ program
   .version("2.0.0");
 
 program
+  .command("auth")
+  .description("Authorize a different X account via OAuth 2.0 PKCE flow")
+  .action(async () => {
+    const clientId = process.env.X_CLIENT_ID;
+    const clientSecret = process.env.X_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      console.error("Missing X_CLIENT_ID or X_CLIENT_SECRET in environment.");
+      console.error("Set these in your .env file.");
+      process.exit(1);
+    }
+
+    await startOAuth2Flow(clientId, clientSecret);
+  });
+
+program
   .command("sync")
-  .description("Scrape LinkedIn, find new posts from last 2 days, cross-post to X")
+  .description("Scrape LinkedIn, find new posts, cross-post to X immediately")
   .option("--dry-run", "Show what would be posted without actually posting")
   .action(async (opts: { dryRun?: boolean }) => {
     const config = loadConfig();
     console.log("=== LinkedIn to X Sync ===\n");
 
-    // 1. Scrape LinkedIn
+    // 1. Scrape LinkedIn (last 10 posts max)
     const posts = await scrapeLinkedInPosts(config);
     if (posts.length === 0) {
       console.log("No posts found on LinkedIn (or not logged in).");
@@ -55,49 +62,14 @@ program
       return;
     }
 
-    // 4. Build or load a schedule with gap preservation
-    let schedule = loadSchedule(config.dataDir);
-
-    // Check if we need to create a new schedule (new posts detected)
-    const scheduledTexts = schedule?.posts.map((p) => normalizeSnippet(p.text)) ?? [];
-    const unscheduled = newPosts.filter(
-      (p) => !scheduledTexts.includes(normalizeSnippet(p.text))
-    );
-
-    if (unscheduled.length > 0) {
-      console.log(`Scheduling ${unscheduled.length} new post(s) with gap preservation...`);
-      const newScheduledPosts = buildSchedule(unscheduled);
-
-      if (schedule) {
-        schedule.posts.push(...newScheduledPosts);
-      } else {
-        schedule = {
-          createdAt: new Date().toISOString(),
-          posts: newScheduledPosts,
-        };
-      }
-      saveSchedule(config.dataDir, schedule);
-
-      for (const sp of newScheduledPosts) {
-        const preview = sp.text.replace(/\n/g, " ").slice(0, 80);
-        console.log(`  Scheduled for ${sp.scheduledFor}: "${preview}..."`);
-      }
-      console.log();
-    }
-
-    // 5. Post any due items from the schedule
-    const duePosts = getDuePosts(schedule!);
-    if (duePosts.length === 0) {
-      const nextUnposted = schedule!.posts.find((p) => !p.posted);
-      if (nextUnposted) {
-        console.log(`No posts due yet. Next scheduled: ${nextUnposted.scheduledFor}`);
-      }
-      return;
-    }
-
+    // 4. Post immediately, one at a time with 5s delay
     let successCount = 0;
-    for (const due of duePosts) {
-      const tweetText = formatForX(due.text, due.url);
+    // Post oldest first (reverse since LinkedIn shows newest first)
+    const postsToSend = [...newPosts].reverse();
+
+    for (let i = 0; i < postsToSend.length; i++) {
+      const post = postsToSend[i];
+      const tweetText = formatForX(post.text, post.url);
       const preview = tweetText.slice(0, 100).replace(/\n/g, " ");
 
       if (opts.dryRun) {
@@ -112,13 +84,8 @@ program
       if (result.success && result.tweetId) {
         console.log(`  -> Success! https://x.com/i/status/${result.tweetId}`);
 
-        // Mark as posted in schedule
-        const idx = schedule!.posts.indexOf(due);
-        markPosted(schedule!, idx);
-        saveSchedule(config.dataDir, schedule!);
-
         addTrackerEntry(config.trackerFilePath, {
-          linkedinSnippet: snippetForTracker(due.text),
+          linkedinSnippet: snippetForTracker(post.text),
           datePostedToX: new Date().toISOString(),
           xPostId: result.tweetId,
         });
@@ -128,16 +95,16 @@ program
         console.error(`  -> Failed: ${result.error}`);
       }
 
-      // Small delay between posts
-      if (duePosts.indexOf(due) < duePosts.length - 1) {
-        await new Promise((r) => setTimeout(r, 2000));
+      // 5 second delay between posts
+      if (i < postsToSend.length - 1) {
+        console.log("  Waiting 5 seconds...");
+        await new Promise((r) => setTimeout(r, 5000));
       }
     }
 
     if (!opts.dryRun) {
-      console.log(`\nDone. Cross-posted ${successCount}/${duePosts.length} due post(s).`);
+      console.log(`\nDone. Cross-posted ${successCount}/${postsToSend.length} post(s).`);
       console.log(`Tracker: ${config.trackerFilePath}`);
-      console.log(`Schedule: ${config.dataDir}/scheduled.json`);
     }
   });
 
@@ -179,10 +146,7 @@ program
     } else {
       for (const post of pending) {
         const snippet = post.text.replace(/\n/g, " ").slice(0, 100);
-        const age = post.timestamp
-          ? `${Math.round((Date.now() - post.timestamp.getTime()) / (1000 * 60 * 60))}h ago`
-          : "unknown age";
-        console.log(`  [${age}] ${snippet}...`);
+        console.log(`  ${snippet}...`);
       }
     }
   });
