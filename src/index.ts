@@ -11,6 +11,14 @@ import {
   snippetForTracker,
   normalizeSnippet,
 } from "./tracker.js";
+import {
+  buildSchedule,
+  loadSchedule,
+  saveSchedule,
+  getDuePosts,
+  markPosted,
+  ScheduleFile,
+} from "./scheduler.js";
 
 const program = new Command();
 
@@ -47,10 +55,49 @@ program
       return;
     }
 
-    // 4. Cross-post each new item
+    // 4. Build or load a schedule with gap preservation
+    let schedule = loadSchedule(config.dataDir);
+
+    // Check if we need to create a new schedule (new posts detected)
+    const scheduledTexts = schedule?.posts.map((p) => normalizeSnippet(p.text)) ?? [];
+    const unscheduled = newPosts.filter(
+      (p) => !scheduledTexts.includes(normalizeSnippet(p.text))
+    );
+
+    if (unscheduled.length > 0) {
+      console.log(`Scheduling ${unscheduled.length} new post(s) with gap preservation...`);
+      const newScheduledPosts = buildSchedule(unscheduled);
+
+      if (schedule) {
+        schedule.posts.push(...newScheduledPosts);
+      } else {
+        schedule = {
+          createdAt: new Date().toISOString(),
+          posts: newScheduledPosts,
+        };
+      }
+      saveSchedule(config.dataDir, schedule);
+
+      for (const sp of newScheduledPosts) {
+        const preview = sp.text.replace(/\n/g, " ").slice(0, 80);
+        console.log(`  Scheduled for ${sp.scheduledFor}: "${preview}..."`);
+      }
+      console.log();
+    }
+
+    // 5. Post any due items from the schedule
+    const duePosts = getDuePosts(schedule!);
+    if (duePosts.length === 0) {
+      const nextUnposted = schedule!.posts.find((p) => !p.posted);
+      if (nextUnposted) {
+        console.log(`No posts due yet. Next scheduled: ${nextUnposted.scheduledFor}`);
+      }
+      return;
+    }
+
     let successCount = 0;
-    for (const post of newPosts) {
-      const tweetText = formatForX(post.text, post.url);
+    for (const due of duePosts) {
+      const tweetText = formatForX(due.text, due.url);
       const preview = tweetText.slice(0, 100).replace(/\n/g, " ");
 
       if (opts.dryRun) {
@@ -65,8 +112,13 @@ program
       if (result.success && result.tweetId) {
         console.log(`  -> Success! https://x.com/i/status/${result.tweetId}`);
 
+        // Mark as posted in schedule
+        const idx = schedule!.posts.indexOf(due);
+        markPosted(schedule!, idx);
+        saveSchedule(config.dataDir, schedule!);
+
         addTrackerEntry(config.trackerFilePath, {
-          linkedinSnippet: snippetForTracker(post.text),
+          linkedinSnippet: snippetForTracker(due.text),
           datePostedToX: new Date().toISOString(),
           xPostId: result.tweetId,
         });
@@ -76,15 +128,16 @@ program
         console.error(`  -> Failed: ${result.error}`);
       }
 
-      // Small delay between posts to avoid rate limits
-      if (newPosts.indexOf(post) < newPosts.length - 1) {
+      // Small delay between posts
+      if (duePosts.indexOf(due) < duePosts.length - 1) {
         await new Promise((r) => setTimeout(r, 2000));
       }
     }
 
     if (!opts.dryRun) {
-      console.log(`\nDone. Cross-posted ${successCount}/${newPosts.length} post(s).`);
+      console.log(`\nDone. Cross-posted ${successCount}/${duePosts.length} due post(s).`);
       console.log(`Tracker: ${config.trackerFilePath}`);
+      console.log(`Schedule: ${config.dataDir}/scheduled.json`);
     }
   });
 

@@ -65,36 +65,67 @@ async function extractPosts(page: Page, maxAgeDays: number): Promise<LinkedInPos
   const posts = await page.evaluate((cutoffMs: number) => {
     const results: Array<{ text: string; timestamp: string | null; url: string | null }> = [];
 
-    // LinkedIn uses various selectors for feed posts
-    const postContainers = document.querySelectorAll(
-      ".feed-shared-update-v2, .profile-creator-shared-feed-update__container, [data-urn*='activity']"
-    );
+    // LinkedIn post containers
+    const postContainers = document.querySelectorAll(".feed-shared-update-v2");
 
     for (const container of postContainers) {
-      // Extract text content from the post
-      const textEl = container.querySelector(
-        ".feed-shared-update-v2__description, .feed-shared-text, .break-words, .update-components-text, span[dir='ltr']"
-      );
+      // Extract text content — try multiple selectors, filter for spans with real content
       let text = "";
-      if (textEl) {
-        text = textEl.textContent?.trim() || "";
-      }
 
-      if (!text) {
-        // Try broader text extraction
-        const commentaryEl = container.querySelector(
-          ".feed-shared-update-v2__commentary, .update-components-text__text-view"
-        );
-        text = commentaryEl?.textContent?.trim() || "";
+      const textSelectors = [
+        ".feed-shared-inline-show-more-text span[dir='ltr']",
+        ".feed-shared-update-v2__commentary span[dir='ltr']",
+        ".update-components-text span[dir='ltr']",
+      ];
+
+      for (const selector of textSelectors) {
+        if (text) break;
+        const spans = container.querySelectorAll(selector);
+        const parts: string[] = [];
+        for (const span of spans) {
+          const content = span.textContent?.trim() || "";
+          if (content.length > 20) {
+            parts.push(content);
+          }
+        }
+        if (parts.length > 0) {
+          text = parts.join("\n").trim();
+        }
       }
 
       if (!text) continue;
 
-      // Extract timestamp
+      // Extract timestamp — try aria-hidden span first, then <time> element
       let timestamp: string | null = null;
-      const timeEl = container.querySelector("time");
-      if (timeEl) {
-        timestamp = timeEl.getAttribute("datetime");
+      const timeSpan = container.querySelector(
+        ".feed-shared-actor__sub-description span[aria-hidden='true']"
+      );
+      if (timeSpan) {
+        // Parse relative time strings like "2h", "1d", "3w"
+        const relText = timeSpan.textContent?.trim() || "";
+        const relMatch = relText.match(/(\d+)\s*(m|h|d|w|mo|y)/);
+        if (relMatch) {
+          const num = parseInt(relMatch[1], 10);
+          const unit = relMatch[2];
+          const now = Date.now();
+          const ms: Record<string, number> = {
+            m: 60_000,
+            h: 3_600_000,
+            d: 86_400_000,
+            w: 604_800_000,
+            mo: 2_592_000_000,
+            y: 31_536_000_000,
+          };
+          if (ms[unit]) {
+            timestamp = new Date(now - num * ms[unit]).toISOString();
+          }
+        }
+      }
+      if (!timestamp) {
+        const timeEl = container.querySelector("time");
+        if (timeEl) {
+          timestamp = timeEl.getAttribute("datetime");
+        }
       }
 
       // Extract post URL from the activity URN or share link
