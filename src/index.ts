@@ -258,4 +258,65 @@ program
     }
   });
 
+program
+  .command("start")
+  .description("Run continuous sync loop — checks LinkedIn every hour and cross-posts new content")
+  .option("--interval <minutes>", "Minutes between checks (default: 60)", "60")
+  .action(async (opts: { interval: string }) => {
+    const intervalMs = parseInt(opts.interval, 10) * 60 * 1000;
+    const intervalMin = parseInt(opts.interval, 10);
+
+    console.log(`=== LinkedIn to X — Continuous Sync ===`);
+    console.log(`Checking every ${intervalMin} minutes. Press Ctrl+C to stop.\n`);
+
+    const runSync = async () => {
+      try {
+        const config = loadConfig();
+        const posts = await scrapeLinkedInPosts(config);
+        if (posts.length === 0) {
+          console.log(`[${new Date().toLocaleTimeString()}] No posts found.`);
+          return;
+        }
+
+        const trackerEntries = loadTracker(config.trackerFilePath);
+        const newPosts = posts.filter((p) => !isAlreadyPosted(trackerEntries, p.text));
+
+        if (newPosts.length === 0) {
+          console.log(`[${new Date().toLocaleTimeString()}] All caught up — nothing new to post.`);
+          return;
+        }
+
+        console.log(`[${new Date().toLocaleTimeString()}] Found ${newPosts.length} new post(s). Cross-posting...`);
+
+        const postsToSend = [...newPosts].reverse();
+        for (let i = 0; i < postsToSend.length; i++) {
+          const post = postsToSend[i];
+          const tweetText = formatForX(post.text);
+          const result = await postTweet(config.x, tweetText);
+
+          if (result.success && result.tweetId) {
+            console.log(`  -> Success! https://x.com/i/status/${result.tweetId}`);
+            addTrackerEntry(config.trackerFilePath, {
+              linkedinSnippet: snippetForTracker(post.text),
+              datePostedToX: new Date().toISOString(),
+              xPostId: result.tweetId,
+            });
+          } else {
+            console.error(`  -> Failed: ${result.error}`);
+          }
+
+          if (i < postsToSend.length - 1) {
+            await new Promise((r) => setTimeout(r, 60000));
+          }
+        }
+      } catch (err) {
+        console.error(`[${new Date().toLocaleTimeString()}] Error:`, (err as Error).message);
+      }
+    };
+
+    // Run immediately, then on interval
+    await runSync();
+    setInterval(runSync, intervalMs);
+  });
+
 program.parse();
