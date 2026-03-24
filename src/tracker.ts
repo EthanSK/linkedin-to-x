@@ -93,9 +93,11 @@ export function isAlreadyPosted(
 
 export function normalizeSnippet(text: string): string {
   return text
+    .replace(/\\\|/g, "|")   // unescape pipes from tracker format
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 100)
+    .replace(/\.{3}$/, "")   // strip trailing "..." from tracker truncation
+    .slice(0, 97)
     .toLowerCase();
 }
 
